@@ -1,0 +1,59 @@
+1. CPU 부하가 많이 걸릴 수록, execution time이 오래걸리는 형태로 코딩 수정이 필요함.
+2. message format을 수정해서, execution time을 담아서 전송한다면, 
+통신에 걸리는 시간과 실행시간을 구분해서 확인할 수 있도록 할 수 있을 것 같은데?
+3.Application 제작자 입장에서, TCP/IP를 쓸까? grpc로 변경해야하나?
+
+
+해결해야하는 문제
+1. HW에 따라 걸리는 시간 달리 -> Ticks 기준으로 수정해야함
+2. Mutex와 같은 Shared resource issue로 발생하는 delay를 반영하도록 Code를 수정해야함
+    읽는 거랑 실행하는 거는 별도이니까.
+3. 
+
+
+작업
+1. E2E Latency 측정 방식 변경
+2. Message format 변경해서 실행시간, 통신에 걸리는 시간 구분해서 측정 가능하도록 설정
+3. Shared Memory로 변경하여 동일 E2E Latency 및 통신에 걸리는 시간 구분 측정
+4. Shared Memory가 된다면, 다양한 동기화 기법 적용해서 비교 측정
+5. Core 따로 선택 가능하도록 설정해서 측정 (내 노트북 HPC라고 가정하고, 내 노트북에서 모든 걸 해결한다는 가정하에 문제해결)
+    - zcu포함하는 Multi-node 가정한다면, Lidar grabber같은 Task는 Shared Memory안쓰는 걸로 설정
+
+
+Message format
+- Chain_level을 설정: Chain_level과 Chain_type에 의해서 메세지 작성 위치를 달리함 + 각 Task가 사용할 수 있는 메세지 크기는 64bytes
+    - Ex: Chain_type이 x이고, Chain_level이 y인 Task라면, Task가 쓰는 Message 범위는 [(x-1)*256 + (y-2)*64, (x-1)*256 + (y-2)*64 + 63] bytes
+        - Chain 마다 주어지는 Message size는 256bytes
+        - Task 마다 주어지는 Message size는 64bytes
+        - Chain_type은 [1,5], Chain_level은 [1,5]
+- Chain_type은 총 5가지, [1,5],19년도 Model_based timing analysis 논문 index 그대로 차용
+    - Task Chain 1: Lider_Grabber - Loc - EKF - Planner - DASM
+    - Task Chain 2: CAN - Loc - EKF - Planner - DASM
+    - Task Chain 3: SFM - Planner - DASM
+    - Task Chain 4: Lane_detection - Planner - DASM
+    - Task Chain 5: Detection - Planner - DASM
+- Chain_level은 총 5가지
+    - Chain_level 1: DASM
+    - Chain_level 2: Planner
+    - Chain_level 3: SFM, Detection, Lane_detection, EKF
+    - Chain_level 4: Loc
+    - Chain_level 5: Lider_Grabber, CAN
+- Task가 사용하는 Message size 64bytes format
+    - [0-15]: ID //이 중에서 1byte만 사용
+    - [16-31]: 주기가 깨는 시점 //16bytes
+    - [32-47]: Task start 시점 //16bytes
+    - [48-63]: Task end 시점(= Data 전송 시점) //16bytes
+
+Task의 execution phase
+    - 4가지로 나누어짐
+        1. Setup (깨어나는 시점부터, 데이터 읽기까지)
+        2. execution (Task 해당 exec)
+        3. send (Task에서 만든 message send 시점)
+        4. log print
+        5. next period cal
+
+현재 Chain 읽기 수정중
+    - Chain 단위면, 256bytes 전부 읽는 걸로 수정해야함. -> 꼭 읽어야 하나? 일단 고민 및 확인해보기
+        - 원래 하던 대로 local copy 쓰는게 더 좋나? 전부 읽어야하니까?
+        - local copy하고, 거기까지가 setup 끝, 이후 구조체로 읽어와야하는데, Chain범위 256bytes 모두 읽고 Planner 범위 쓰기 해야함 
+    - 쓰는 거야 Planner에 지정된 위치만 쓰면 될 듯
